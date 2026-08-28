@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>LingoForge — English Phrase Mastery</title>
+<meta name="theme-color" content="#0B0E14">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="LingoForge">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  :root{
+    --bg:#0B0E14; --surface:#141922; --surface2:#1C2230; --line:#252D3D;
+    --txt:#E8ECF4; --txt2:#8894AB; --txt3:#5A6478;
+    --acc:#00E5A0; --acc2:#00B87F; --warn:#FFB020; --err:#FF5C5C;
+    --p1:#7C6BFF; --p2:#00C2FF; --p3:#FF6BB5; --p4:#FFB020; --p5:#00E5A0; --p6:#FF8A5C;
+  }
+  body{font-family:'Space Grotesk',system-ui,sans-serif;background:var(--bg);color:var(--txt);max-width:520px;margin:0 auto;min-height:100vh;overflow-x:hidden}
+  .ar{font-family:'IBM Plex Sans Arabic',sans-serif;direction:rtl}
+  button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+  input,textarea{font-family:inherit;outline:none}
+  ::-webkit-scrollbar{width:6px;height:6px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+  @keyframes pop{0%{transform:scale(.85);opacity:0}100%{transform:scale(1);opacity:1}}
+  @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
+  @keyframes glow{0%,100%{box-shadow:0 0 0 0 rgba(0,229,160,.4)}50%{box-shadow:0 0 0 12px rgba(0,229,160,0)}}
+  @keyframes dots{0%,80%,100%{opacity:.3;transform:scale(.8)}40%{opacity:1;transform:scale(1)}}
+  .fu{animation:fadeUp .35s ease both}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useCallback,useRef,useMemo}=React;
+const KEY="lingoforge-v1";
+const BATCH=15;
+
+/* ══════════ DATA VALIDATION (the fix) ══════════ */
+const AR_RE=/[\u0600-\u06FF]/;
+const hasArabic=s=>AR_RE.test(String(s||""));
+const hasLatin=s=>/[a-zA-Z]/.test(String(s||""));
+const cleanStr=s=>String(s||"").replace(/\.{2,}\s*$/,"").replace(/\s+/g," ").trim();
+
+/* A valid pair MUST have: English side with real latin letters (2+ chars, not just a number),
+   Arabic side with real arabic script. This is what kills the "6 / 8 / 9" bug. */
+const validPair=(en,ar)=>{
+  en=cleanStr(en); ar=cleanStr(ar);
+  if(!en||!ar) return null;
+  if(!hasLatin(en)) return null;              // rejects "6", "", "—"
+  if(en.replace(/[^a-zA-Z]/g,"").length<2) return null; // rejects "a1", "x"
+  if(!hasArabic(ar)) return null;             // rejects numbers/latin in arabic slot
+  if(hasArabic(en)) return null;              // english slot must not be arabic
+  if(/^(english phrase|phrase|sentence|#|no|num)$/i.test(en)) return null; // headers
+  return {en,ar};
+};
+
+/* Smart row parser: tries every column combination, picks the first valid one */
+const parseRow=(r)=>{
+  const cells=(r||[]).map(c=>cleanStr(c)).filter(c=>c!=="");
+  if(cells.length<2) return null;
+  // Find the first latin cell and the first arabic cell
+  const enCell=cells.find(c=>hasLatin(c)&&!hasArabic(c)&&c.replace(/[^a-zA-Z]/g,"").length>=2);
+  const arCell=cells.find(c=>hasArabic(c));
+  if(enCell&&arCell){
+    const v=validPair(enCell,arCell);
+    if(v){
+      // pronunciation = another arabic cell that isn't the translation
+      const pron=cells.find(c=>c!==arCell&&c!==enCell&&hasArabic(c)&&c.length<25)||"";
+      return {...v,pron};
+    }
+  }
+  return null;
+};
+
+const SEED=[
+  {en:"No need to worry",ar:"لا داعي للقلق",pron:""},
+  {en:"As far as I know",ar:"على حد علمي",pron:""},
+  {en:"At your service",ar:"أنا في خدمتك",pron:""},
+  {en:"Everything will turn out fine",ar:"كل شيء سيسير على ما يرام",pron:""},
+  {en:"Who knows?",ar:"من يدري؟",pron:""},
+  {en:"Do me a favor",ar:"اعمل لي معروفاً",pron:""},
+  {en:"Let me clarify",ar:"دعني أوضح",pron:"كلاري-فاي"},
+  {en:"Put yourself in my shoes",ar:"ضع نفسك مكاني",pron:""},
+  {en:"Everyone has flaws",ar:"كل شخص له عيوب",pron:"فلاوز"},
+  {en:"Unbelievable",ar:"أمر لا يصدق",pron:"آن-بي-لي-فا-بل"},
+  {en:"It just crossed my mind",ar:"خاطر ببالي شيء",pron:""},
+  {en:"Don't get me wrong",ar:"لا تفهمني خطأ",pron:""},
+  {en:"On purpose",ar:"عن قصد",pron:"بيربس"},
+  {en:"At all costs",ar:"مهما كلف الأمر",pron:""},
+  {en:"Enough is enough",ar:"لقد طفح الكيل",pron:""},
+];
+
+const MODES=[
+  {id:"flash",ic:"◈",t:"Flip Cards",ar:"بطاقات",d:"Recall & self-check",c:"var(--p1)"},
+  {id:"mcq",ic:"◎",t:"Choose",ar:"اختيار",d:"Pick the right one",c:"var(--p2)"},
+  {id:"type",ic:"⌨",t:"Type It",ar:"اكتب",d:"Write from memory",c:"var(--p5)"},
+  {id:"match",ic:"⇄",t:"Match",ar:"وصّل",d:"Pair EN ↔ AR",c:"var(--p6)"},
+  {id:"build",ic:"⬡",t:"Build",ar:"رتّب",d:"Order the words",c:"var(--p3)"},
+  {id:"listen",ic:"◉",t:"Listen",ar:"اسمع",d:"Hear & transcribe",c:"var(--p4)"},
+  {id:"speed",ic:"⚡",t:"Speed",ar:"سرعة",d:"Beat the clock",c:"var(--warn)"},
+];
+
+/* ══════════ UTILS ══════════ */
+const sh=a=>{const b=[...a];for(let i=b.length-1;i>0;i--){const j=~~(Math.random()*(i+1));[b[i],b[j]]=[b[j],b[i]];}return b};
+const nm=s=>String(s||"").trim().toLowerCase().replace(/[?.!,;:'"`’]/g,"").replace(/\s+/g," ");
+const pick=(ps,n)=>{
+  if(!ps.length)return[];
+  const w=ps.map(p=>({p,w:Math.max(7-(p.st||0)*1.1,1.8)}));
+  const tot=w.reduce((s,x)=>s+x.w,0);const out=[];const seen=new Set();
+  const max=Math.min(n,ps.length);let guard=0;
+  while(out.length<max&&guard++<max*20){
+    let r=Math.random()*tot;
+    for(let i=0;i<w.length;i++){if(seen.has(i))continue;r-=w[i].w;if(r<=0){out.push(w[i].p);seen.add(i);break}}
+  }
+  return sh(out);
+};
+const say=(t,rate=.85)=>{if(!("speechSynthesis"in window))return;speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang="en-US";u.rate=rate;speechSynthesis.speak(u)};
+const ld=()=>{try{const d=localStorage.getItem(KEY);return d?JSON.parse(d):null}catch{return null}};
+const sv=d=>{try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}};
+
+/* Sanitize anything already in storage — removes the corrupted "6/8/9" rows */
+const sanitize=arr=>(arr||[]).map(p=>{
+  const v=validPair(p.en,p.ar);
+  return v?{...p,en:v.en,ar:v.ar}:null;
+}).filter(Boolean);
+
+/* ══════════ UI PRIMITIVES ══════════ */
+const Bar=({v,c="var(--acc)",h=4})=>(
+  <div style={{height:h,background:"var(--line)",borderRadius:h,overflow:"hidden"}}>
+    <div style={{height:"100%",width:`${Math.min(100,v)}%`,background:c,borderRadius:h,transition:"width .45s cubic-bezier(.4,0,.2,1)"}}/>
+  </div>
+);
+
+const Top=({t,sub,onBack,right})=>(
+  <div style={{display:"flex",alignItems:"center",gap:12,padding:"18px 20px 14px",position:"sticky",top:0,background:"linear-gradient(180deg,var(--bg) 70%,transparent)",zIndex:20}}>
+    {onBack&&<button onClick={onBack} style={{width:38,height:38,borderRadius:12,background:"var(--surface2)",fontSize:17,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>←</button>}
+    <div style={{flex:1,minWidth:0}}>
+      <div style={{fontSize:17,fontWeight:600,letterSpacing:"-.01em"}}>{t}</div>
+      {sub&&<div style={{fontSize:11.5,color:"var(--txt3)",marginTop:1}}>{sub}</div>}
+    </div>
+    {right}
+  </div>
+);
+
+const Verdict=({ok,note,onNext,label})=>(
+  <div style={{position:"fixed",bottom:0,left:0,right:0,maxWidth:520,margin:"0 auto",padding:"18px 20px 24px",background:ok?"linear-gradient(180deg,#00382A,#002A20)":"linear-gradient(180deg,#3D1518,#2A0F11)",borderTop:`1px solid ${ok?"var(--acc2)":"var(--err)"}`,borderRadius:"20px 20px 0 0",zIndex:60,animation:"slideUp .28s cubic-bezier(.4,0,.2,1)"}}>
+    <div style={{display:"flex",alignItems:"center",gap:9,marginBottom:note?7:12}}>
+      <span style={{width:24,height:24,borderRadius:8,background:ok?"var(--acc)":"var(--err)",color:"#000",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700,flexShrink:0}}>{ok?"✓":"✕"}</span>
+      <span style={{fontSize:15.5,fontWeight:600,color:ok?"var(--acc)":"var(--err)"}}>{label||(ok?"Correct":"Not quite")}</span>
+    </div>
+    {note&&<div dir="auto" style={{fontSize:14,color:"var(--txt2)",marginBottom:12,lineHeight:1.55}}>{note}</div>}
+    <button onClick={onNext} style={{width:"100%",padding:14,borderRadius:13,background:ok?"var(--acc)":"var(--surface2)",color:ok?"#00150E":"var(--txt)",fontSize:15,fontWeight:600}}>Continue →</button>
+  </div>
+);
+
+const Recap=({c,t,onExit,onAgain})=>{
+  const p=t?Math.round(c/t*100):0;
+  return(
+    <div className="fu" style={{padding:"36px 24px",textAlign:"center"}}>
+      <div style={{fontSize:56,marginBottom:6}}>{p>=80?"◆":p>=50?"◈":"◇"}</div>
+      <div style={{fontSize:40,fontWeight:700,letterSpacing:"-.03em",color:p>=80?"var(--acc)":p>=50?"var(--warn)":"var(--err)"}}>{p}%</div>
+      <div style={{fontSize:13,color:"var(--txt3)",marginBottom:26}}>{c} of {t} correct</div>
+      <div style={{display:"flex",gap:10,marginBottom:22}}>
+        {[["Right",c,"var(--acc)"],["Wrong",t-c,"var(--err)"]].map(([l,v,col])=>(
+          <div key={l} style={{flex:1,background:"var(--surface)",borderRadius:14,padding:"14px 8px",border:"1px solid var(--line)"}}>
+            <div style={{fontSize:22,fontWeight:700,color:col}}>{v}</div>
+            <div style={{fontSize:10.5,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:".08em"}}>{l}</div>
+          </div>
+        ))}
+      </div>
+      <button onClick={onAgain} style={{width:"100%",padding:14,borderRadius:13,background:"var(--acc)",color:"#00150E",fontSize:15,fontWeight:600,marginBottom:9}}>Run again</button>
+      <button onClick={onExit} style={{width:"100%",padding:14,borderRadius:13,background:"var(--surface2)",fontSize:15,fontWeight:500}}>Back to hub</button>
+    </div>
+  );
+};
+
+const Prompt=({label,text,ar,onSpeak})=>(
+  <div style={{background:"var(--surface)",border:"1px solid var(--line)",borderRadius:18,padding:"22px 20px",textAlign:"center",marginBottom:16}}>
+    <div style={{fontSize:10.5,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:".1em",marginBottom:10}}>{label}</div>
+    <div className={ar?"ar":""} dir={ar?"rtl":"ltr"} style={{fontSize:ar?20:21,fontWeight:600,lineHeight:1.55,letterSpacing:ar?0:"-.01em"}}>{text}</div>
+    {onSpeak&&<button onClick={onSpeak} style={{marginTop:12,padding:"7px 15px",borderRadius:10,background:"var(--surface2)",fontSize:12.5,color:"var(--txt2)"}}>◉ Play audio</button>}
+  </div>
+);
+
+/* ══════════ 1. FLIP CARDS ══════════ */
+function Flash({ph,up,onExit}){
+  const[k,setK]=useState(0);
+  const[cards,setCards]=useState(()=>pick(ph,Math.min(12,ph.length)));
+  const[i,setI]=useState(0),[f,setF]=useState(false),[sc,setSc]=useState({c:0,t:0}),[end,setEnd]=useState(null);
+  const c=cards[i];
+  const go=knew=>{up(c.en,knew);const n={c:sc.c+(knew?1:0),t:sc.t+1};setSc(n);
+    if(i+1>=cards.length)setEnd(n);else{setI(i+1);setF(false)}};
+  const again=()=>{setCards(pick(ph,Math.min(12,ph.length)));setI(0);setF(false);setSc({c:0,t:0});setEnd(null);setK(k+1)};
+  if(end)return<><Top t="Flip Cards" onBack={onExit}/><Recap c={end.c} t={end.t} onExit={onExit} onAgain={again}/></>;
+  return(<div key={k}>
+    <Top t="Flip Cards" sub={`${i+1} / ${cards.length}`} onBack={onExit}/>
+    <div style={{padding:"0 20px 20px"}}><Bar v={(i+1)/cards.length*100} c="var(--p1)"/></div>
+    <div style={{padding:"0 20px"}}>
+      <div onClick={()=>setF(!f)} className="fu" style={{minHeight:230,background:f?"linear-gradient(150deg,#2A1F5C,#1A1440)":"var(--surface)",border:`1px solid ${f?"var(--p1)":"var(--line)"}`,borderRadius:22,padding:"30px 24px",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",transition:"all .35s cubic-bezier(.4,0,.2,1)"}}>
+        <div style={{fontSize:10,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:".12em",marginBottom:14}}>{f?"Arabic":"English"} · tap to flip</div>
+        <div className={f?"ar":""} dir={f?"rtl":"ltr"} style={{fontSize:f?21:23,fontWeight:600,textAlign:"center",lineHeight:1.55}}>{f?c.ar:c.en}</div>
+        {f&&c.pron&&<div className="ar" style={{marginTop:11,fontSize:13,color:"var(--p1)",opacity:.85}}>◉ {c.pron}</div>}
+        {!f&&<button onClick={e=>{e.stopPropagation();say(c.en)}} style={{marginTop:18,padding:"8px 17px",borderRadius:11,background:"var(--surface2)",fontSize:12.5,color:"var(--txt2)"}}>◉ Play</button>}
+      </div>
+      {f&&<div className="fu" style={{display:"flex",gap:10,marginTop:16}}>
+        <button onClick={()=>go(false)} style={{flex:1,padding:15,borderRadius:14,background:"rgba(255,92,92,.12)",border:"1px solid rgba(255,92,92,.3)",color:"var(--err)",fontSize:14.5,fontWeight:600}}>Missed it</button>
+        <button onClick={()=>go(true)} style={{flex:1,padding:15,borderRadius:14,background:"rgba(0,229,160,.12)",border:"1px solid rgba(0,229,160,.3)",color:"var(--acc)",fontSize:14.5,fontWeight:600}}>Knew it</button>
+      </div>}
+    </div>
+  </div>);
+}
+
+/* ══════════ 2. MULTIPLE CHOICE ══════════ */
+function MCQ({ph,all,up,onExit}){
+  const pool=all.length>=4?all:ph;
+  const mk=()=>pick(ph,Math.min(12,ph.length)).map(q=>({q,dir:Math.random()>.5?"e":"a",o:sh([q,...sh(pool.filter(p=>p.en!==q.en)).slice(0,3)])}));
+  const[k,setK]=useState(0),[qs,setQs]=useState(mk);
+  const[i,setI]=useState(0),[s,setS]=useState(null),[sc,setSc]=useState({c:0,t:0}),[end,setEnd]=useState(null);
+  const q=qs[i];const ok=s!==null&&q.o[s].en===q.q.en;
+  const tap=x=>{if(s!==null)return;setS(x);up(q.q.en,q.o[x].en===q.q.en)};
+  const nx=()=>{const n={c:sc.c+(ok?1:0),t:sc.t+1};setSc(n);if(i+1>=qs.length)setEnd(n);else{setI(i+1);setS(null)}};
+  const again=()=>{setQs(mk());setI(0);setS(null);setSc({c:0,t:0});setEnd(null);setK(k+1)};
+  if(end)return<><Top t="Choose" onBack={onExit}/><Recap c={end.c} t={end.t} onExit={onExit} onAgain={again}/></>;
+  return(<div key={k} style={{paddingBottom:s!==null?170:20}}>
+    <Top t="Choose" sub={`${i+1} / ${qs.length}`} onBack={onExit}/>
+    <div style={{padding:"0 20px 18px"}}><Bar v={(i+1)/qs.length*100} c="var(--p2)"/></div>
+    <div style={{padding:"0 20px"}}>
+      <Prompt label={q.dir==="e"?"Translate to Arabic":"Translate to English"} text={q.dir==="e"?q.q.en:q.q.ar} ar={q.dir==="a"} onSpeak={q.dir==="e"?()=>say(q.q.en):null}/>
+      <div style={{display:"flex",flexDirection:"column",gap:9}}>
+        {q.o.map((o,x)=>{
+          const right=o.en===q.q.en,mine=s===x;
+          let bg="var(--surface)",bd="var(--line)",col="var(--txt)";
+          if(s!==null){if(right){bg="rgba(0,229,160,.13)";bd="var(--acc)";col="var(--acc)"}
+            else if(mine){bg="rgba(255,92,92,.13)";bd="var(--err)";col="var(--err)"}
+            else{col="var(--txt3)"}}
+          return<button key={x} onClick={()=>tap(x)} className={q.dir==="e"?"ar":""} dir={q.dir==="e"?"rtl":"ltr"}
+            style={{padding:"15px 17px",background:bg,border:`1px solid ${bd}`,borderRadius:14,fontSize:15,fontWeight:500,color:col,textAlign:"center",transition:"all .2s",animation:s!==null&&mine&&!right?"shake .3s":"none"}}>{q.dir==="e"?o.ar:o.en}</button>})}
+      </div>
+    </div>
+    {s!==null&&<Verdict ok={ok} note={!ok?(q.dir==="e"?q.q.ar:q.q.en):""} onNext={nx}/>}
+  </div>);
+}
+
+/* ══════════ 3. TYPE ══════════ */
+function Type({ph,up,onExit}){
+  const mk=()=>pick(ph,Math.min(12,ph.length)).map(q=>({q,dir:Math.random()>.5?"e":"a"}));
+  const[k,setK]=useState(0),[qs,setQs]=useState(mk);
+  const[i,setI]=useState(0),[v,setV]=useState(""),[sb,setSb]=useState(false),[sc,setSc]=useState({c:0,t:0}),[end,setEnd]=useState(null);
+  const r=useRef(null);const q=qs[i];const ans=q.dir==="e"?q.q.ar:q.q.en;const ok=sb&&nm(v)===nm(ans);
+  useEffect(()=>{if(!sb&&r.current)r.current.focus()},[i,sb]);
+  const go=()=>{if(!v.trim()||sb)return;setSb(true);up(q.q.en,nm(v)===nm(ans))};
+  const nx=()=>{const n={c:sc.c+(ok?1:0),t:sc.t+1};setSc(n);if(i+1>=qs.length)setEnd(n);else{setI(i+1);setV("");setSb(false)}};
+  const again=()=>{setQs(mk());setI(0);setV("");setSb(false);setSc({c:0,t:0});setEnd(null);setK(k+1)};
+  if(end)return<><Top t="Type It" onBack={onExit}/><Recap c={end.c} t={end.t} onExit={onExit} onAgain={again}/></>;
+  const toAr=q.dir==="e";
+  return(<div key={k} style={{paddingBottom:sb?180:20}}>
+    <Top t="Type It" sub={`${i+1} / ${qs.length}`} onBack={onExit}/>
+    <div style={{padding:"0 20px 18px"}}><Bar v={(i+1)/qs.length*100} c="var(--p5)"/></div>
+    <div style={{padding:"0 20px"}}>
+      <Prompt label={toAr?"Write it in Arabic":"Write it in English"} text={toAr?q.q.en:q.q.ar} ar={!toAr} onSpeak={toAr?()=>say(q.q.en):null}/>
+      <input ref={r} value={v} onChange={e=>setV(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()}
+        placeholder={toAr?"اكتب بالعربي…":"Type in English…"} dir={toAr?"rtl":"ltr"} disabled={sb}
+        className={toAr?"ar":""}
+        style={{width:"100%",padding:"16px 18px",fontSize:17,background:sb?(ok?"rgba(0,229,160,.1)":"rgba(255,92,92,.1)"):"var(--surface)",border:`1px solid ${sb?(ok?"var(--acc)":"var(--err)"):"var(--line)"}`,borderRadius:14,color:"var(--txt)",textAlign:toAr?"right":"left",transition:"all .2s"}}/>
+      {sb&&!ok&&<div className={toAr?"ar":""} dir={toAr?"rtl":"ltr"} style={{marginTop:11,padding:"12px 15px",background:"rgba(255,176,32,.1)",border:"1px solid rgba(255,176,32,.28)",borderRadius:12,fontSize:14.5,color:"var(--warn)",textAlign:"center"}}>{ans}</div>}
+      {!sb&&<button onClick={go} disabled={!v.trim()} style={{width:"100%",marginTop:14,padding:15,borderRadius:14,background:v.trim()?"var(--acc)":"var(--surface2)",color:v.trim()?"#00150E":"var(--txt3)",fontSize:15,fontWeight:600}}>Check</button>}
+    </div>
+    {sb&&<Verdict ok={ok} note="" onNext={nx}/>}
+  </div>);
+}
+
+/* ══════════ 4. MATCH ══════════ */
+function Match({ph,up,onExit}){
+  const n=Math.min(5,ph.length);
+  const mk=()=>{const s=pick(ph,n);return{l:sh(s),r:sh(s)}};
+  const[k,setK]=useState(0),[it,setIt]=useState(mk);
+  const[sel,setSel]=useState(null),[hit,setHit]=useState(new Set()),[bad,setBad]=useState(null);
+  const[sc,setSc]=useState({c:0,w:0}),[done,setDone]=useState(false);
+  const L=e=>{if(hit.has(e))return;setSel(e);setBad(null)};
+  const R=p=>{if(!sel||hit.has(p.en))return;
+    if(p.en===sel){const s=new Set(hit);s.add(p.en);setHit(s);setSel(null);up(p.en,true);setSc(x=>({...x,c:x.c+1}));if(s.size===n)setTimeout(()=>setDone(true),350)}
+    else{setBad(p.en);up(sel,false);setSc(x=>({...x,w:x.w+1}));setTimeout(()=>setBad(null),600)}};
+  const again=()=>{setIt(mk());setSel(null);setHit(new Set());setBad(null);setSc({c:0,w:0});setDone(false);setK(k+1)};
+  if(done)return<><Top t="Match" onBack={onExit}/><Recap c={sc.c} t={sc.c+sc.w} onExit={onExit} onAgain={again}/></>;
+  const cell=(txt,st,ar)=>{
+    let bg="var(--surface)",bd="var(--line)",col="var(--txt)",op=1;
+    if(st==="hit"){bg="rgba(0,229,160,.1)";bd="var(--acc)";col="var(--acc)";op=.5}
+    if(st==="sel"){bg="rgba(0,194,255,.13)";bd="var(--p2)";col="var(--p2)"}
+    if(st==="bad"){bg="rgba(255,92,92,.13)";bd="var(--err)";col="var(--err)"}
+    return{padding:"13px 9px",fontSize:12.5,fontWeight:500,textAlign:"center",borderRadius:13,background:bg,border:`1px solid ${bd}`,color:col,opacity:op,lineHeight:1.45,transition:"all .2s",animation:st==="bad"?"shake .3s":"none",minHeight:52,display:"flex",alignItems:"center",justifyContent:"center"};
+  };
+  return(<div key={k}>
+    <Top t="Match" sub={`${hit.size} / ${n} paired`} onBack={onExit}/>
+    <div style={{padding:"0 20px 16px"}}><Bar v={hit.size/n*100} c="var(--p6)"/></div>
+    <div style={{display:"flex",gap:8,padding:"0 16px"}}>
+      <div style={{flex:1,display:"flex",flexDirection:"column",gap:8}}>
+        <div style={{fontSize:9.5,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:".1em",textAlign:"center",marginBottom:2}}>English</div>
+        {it.l.map(p=><button key={p.en} onClick={()=>L(p.en)} dir="ltr" style={cell(p.en,hit.has(p.en)?"hit":sel===p.en?"sel":"")}>{p.en}</button>)}
+      </div>
+      <div style={{flex:1,display:"flex",flexDirection:"column",gap:8}}>
+        <div style={{fontSize:9.5,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:".1em",textAlign:"center",marginBottom:2}}>العربي</div>
+        {it.r.map(p=><button key={p.en+"_a"} onClick={()=>R(p)} className="ar" style={cell(p.ar,hit.has(p.en)?"hit":bad===p.en?"bad":"")}>{p.ar}</button>)}
+      </div>
+    </div>
+  </div>);
+}
+
+/* ══════════ 5. BUILD ══════════ */
+function Build({ph,up,onExit}){
+  const usable=ph.filter(p=>p.en.split(/\s+/).length>=2);
+  const src=usable.length?usable:ph;
+  const mk=()=>pick(src,Math.min(10,src.length)).map(p=>({p,w:sh(p.en.split(/\s+/))}));
+  const[k,setK]=useState(0),[qs,setQs]=useState(mk);
+  const[i,setI]=useState(0),[put,setPut]=useState([]),[sb,setSb]=useState(false),[sc,setSc]=useState({c:0,t:0}),[end,setEnd]=useState(null);
+  const q=qs[i];const made=put.map(x=>x.w).join(" ");const ok=sb&&nm(made)===nm(q.p.en);
+  const add=(w,x)=>{if(sb)return;setPut([...put,{w,x}])};
+  const del=x=>{if(sb)return;setPut(put.filter((_,j)=>j!==x))};
+  const go=()=>{if(put.length!==q.w.length)return;setSb(true);up(q.p.en,nm(made)===nm(q.p.en))};
+  const nx=()=>{const n={c:sc.c+(ok?1:0),t:sc.t+1};setSc(n);if(i+1>=qs.length)setEnd(n);else{setI(i+1);setPut([]);setSb(false)}};
+  const again=()=>{setQs(mk());setI(0);setPut([]);setSb(false);setSc({c:0,t:0});setEnd(null);setK(k+1)};
+  if(end)return<><Top t="Build" onBack={onExit}/><Recap c={end.c} t={end.t} onExit={onExit} onAgain={again}/></>;
+  return(<div key={k} style={{paddingBottom:sb?180:20}}>
+    <Top t="Build" sub={`${i+1} / ${qs.length}`} onBack={onExit}/>
+    <div style={{padding:"0 20px 18px"}}><Bar v={(i+1)/qs.length*100} c="var(--p3)"/></div>
+    <div style={{padding:"0 20px"}}>
+      <Prompt label="Order the words" text={q.p.ar} ar/>
+      <div style={{minHeight:56,background:sb?(ok?"rgba(0,229,160,.08)":"rgba(255,92,92,.08)"):"var(--bg)",border:`1px dashed ${sb?(ok?"var(--acc)":"var(--err)"):"var(--line)"}`,borderRadius:14,padding:11,marginBottom:16,display:"flex",flexWrap:"wrap",gap:7,justifyContent:"center",alignItems:"center"}} dir="ltr">
+        {!put.length&&<span style={{color:"var(--txt3)",fontSize:12.5}}>Tap words below in order…</span>}
+        {put.map((x,j)=><button key={j} onClick={()=>del(j)} style={{padding:"8px 13px",background:"var(--surface2)",border:"1px solid var(--p3)",borderRadius:10,fontSize:14,fontWeight:500}}>{x.w}</button>)}
+      </div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:7,justifyContent:"center"}} dir="ltr">
+        {q.w.map((w,x)=>{const used=put.some(p=>p.x===x);
+          return<button key={x} onClick={()=>add(w,x)} disabled={used} style={{padding:"10px 15px",background:used?"transparent":"var(--surface)",border:`1px solid ${used?"var(--line)":"var(--line)"}`,borderRadius:11,fontSize:14,fontWeight:500,color:used?"var(--txt3)":"var(--txt)",opacity:used?.35:1,transition:"all .2s"}}>{w}</button>})}
+      </div>
+      {!sb&&put.length===q.w.length&&<button onClick={go} style={{width:"100%",marginTop:18,padding:15,borderRadius:14,background:"var(--acc)",color:"#00150E",fontSize:15,fontWeight:600}}>Check</button>}
+      {sb&&!ok&&<div dir="ltr" style={{marginTop:12,padding:"12px 15px",background:"rgba(255,176,32,.1)",border:"1px solid rgba(255,176,32,.28)",borderRadius:12,fontSize:14.5,color:"var(--warn)",textAlign:"center"}}>{q.p.en}</div>}
+    </div>
+    {sb&&<Verdict ok={ok} note="" onNext={nx}/>}
+  </div>);
+}
+
+/* ══════════ 6. LISTEN ══════════ */
+function Listen({ph,up,onExit}){
+  const mk=()=>pick(ph,Math.min(10,ph.length));
+  const[k,setK]=useState(0),[qs,setQs]=useState(mk);
+  const[i,setI]=useState(0),[v,setV]=useState(""),[sb,setSb]=useState(false),[pl,setPl]=useState(false);
+  const[sc,setSc]=useState({c:0,t:0}),[end,setEnd]=useState(null);const r=useRef(null);
+  const q=qs[i];const ok=sb&&nm(v)===nm(q.en);
+  useEffect(()=>{if(pl&&r.current)r.current.focus()},[pl]);
+  const go=()=>{if(!v.trim()||sb)return;setSb(true);up(q.en,nm(v)===nm(q.en))};
+  const nx=()=>{const n={c:sc.c+(ok?1:0),t:sc.t+1};setSc(n);if(i+1>=qs.length)setEnd(n);else{setI(i+1);setV("");setSb(false);setPl(false)}};
+  const again=()=>{setQs(mk());setI(0);setV("");setSb(false);setPl(false);setSc({c:0,t:0});setEnd(null);setK(k+1)};
+  if(end)return<><Top t="Listen" onBack={onExit}/><Recap c={end.c} t={end.t} onExit={onExit} onAgain={again}/></>;
+  return(<div key={k} style={{paddingBottom:sb?180:20}}>
+    <Top t="Listen" sub={`${i+1} / ${qs.length}`} onBack={onExit}/>
+    <div style={{padding:"0 20px 18px"}}><Bar v={(i+1)/qs.length*100} c="var(--p4)"/></div>
+    <div style={{padding:"0 20px"}}>
+      <div style={{background:"var(--surface)",border:"1px solid var(--line)",borderRadius:18,padding:"28px 20px",textAlign:"center",marginBottom:16}}>
+        <div style={{fontSize:10.5,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:".1em",marginBottom:16}}>Listen, then transcribe</div>
+        <button onClick={()=>{say(q.en,.72);setPl(true)}} style={{width:74,height:74,borderRadius:"50%",background:"linear-gradient(150deg,var(--p4),#E09000)",fontSize:26,color:"#2A1A00",animation:pl?"none":"glow 2s infinite"}}>◉</button>
+        <div style={{fontSize:11.5,color:"var(--txt3)",marginTop:11}}>{pl?"Tap to replay":"Tap to play"}</div>
+        {sb&&<div className="ar" style={{marginTop:15,paddingTop:15,borderTop:"1px solid var(--line)",fontSize:15,color:"var(--txt2)"}}>{q.ar}</div>}
+      </div>
+      {pl&&<>
+        <input ref={r} value={v} onChange={e=>setV(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()} placeholder="What did you hear?" dir="ltr" disabled={sb}
+          style={{width:"100%",padding:"16px 18px",fontSize:17,background:sb?(ok?"rgba(0,229,160,.1)":"rgba(255,92,92,.1)"):"var(--surface)",border:`1px solid ${sb?(ok?"var(--acc)":"var(--err)"):"var(--line)"}`,borderRadius:14,color:"var(--txt)"}}/>
+        {sb&&!ok&&<div dir="ltr" style={{marginTop:11,padding:"12px 15px",background:"rgba(255,176,32,.1)",border:"1px solid rgba(255,176,32,.28)",borderRadius:12,fontSize:14.5,color:"var(--warn)",textAlign:"center"}}>{q.en}</div>}
+        {!sb&&<button onClick={go} disabled={!v.trim()} style={{width:"100%",marginTop:14,padding:15,borderRadius:14,background:v.trim()?"var(--acc)":"var(--surface2)",color:v.trim()?"#00150E":"var(--txt3)",fontSize:15,fontWeight:600}}>Check</button>}
+      </>}
+    </div>
+    {sb&&<Verdict ok={ok} note="" onNext={nx}/>}
+  </div>);
+}
+
+/* ══════════ 7. SPEED ══════════ */
+function Speed({ph,all,up,onExit}){
+  const pool=all.length>=4?all:ph;
+  const mk=()=>pick(ph,Math.min(30,ph.length)).map(q=>({q,o:sh([q,...sh(pool.filter(p=>p.en!==q.en)).slice(0,3)])}));
+  const[k,setK]=useState(0),[qs,setQs]=useState(mk);
+  const[i,setI]=useState(0),[sc,setSc]=useState({c:0,t:0}),[time,setTime]=useState(60),[end,setEnd]=useState(null),[flash,setFlash]=useState(null);
+  useEffect(()=>{if(end)return;
+    if(time<=0){setEnd({c:sc.c,t:sc.t||1});return}
+    const id=setTimeout(()=>setTime(t=>t-1),1000);return()=>clearTimeout(id)},[time,end,sc]);
+  const q=qs[i];
+  const tap=x=>{
+    if(end||!q)return;
+    const right=q.o[x].en===q.q.en;
+    up(q.q.en,right);
+    setFlash(right?"ok":"no");setTimeout(()=>setFlash(null),180);
+    const n={c:sc.c+(right?1:0),t:sc.t+1};setSc(n);
+    if(!right)setTime(t=>Math.max(0,t-3));
+    if(i+1>=qs.length)setEnd(n);else setI(i+1);
+  };
+  const again=()=>{setQs(mk());setI(0);setSc({c:0,t:0});setTime(60);setEnd(null);setK(k+1)};
+  if(end)return<><Top t="Speed" onBack={onExit}/><Recap c={end.c} t={end.t} onExit={onExit} onAgain={again}/></>;
+  if(!q)return null;
+  return(<div key={k} style={{background:flash==="ok"?"rgba(0,229,160,.06)":flash==="no"?"rgba(255,92,92,.06)":"transparent",minHeight:"100vh",transition:"background .15s"}}>
+    <Top t="Speed" sub={`${sc.c} correct · wrong = −3s`} onBack={onExit}
+      right={<div style={{padding:"7px 14px",borderRadius:12,background:time<=10?"rgba(255,92,92,.15)":"var(--surface2)",color:time<=10?"var(--err)":"var(--txt)",fontSize:17,fontWeight:700,fontVariantNumeric:"tabular-nums"}}>{time}s</div>}/>
+    <div style={{padding:"0 20px 18px"}}><Bar v={time/60*100} c={time<=10?"var(--err)":"var(--warn)"}/></div>
+    <div style={{padding:"0 20px"}}>
+      <Prompt label="Fast — pick the Arabic" text={q.q.en}/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9}}>
+        {q.o.map((o,x)=><button key={x} onClick={()=>tap(x)} className="ar" style={{padding:"17px 11px",background:"var(--surface)",border:"1px solid var(--line)",borderRadius:14,fontSize:13.5,fontWeight:500,minHeight:66,lineHeight:1.45}}>{o.ar}</button>)}
+      </div>
+    </div>
+  </div>);
+}
+
+/* ══════════ UNLOCK GATE ══════════ */
+function Gate({ph,onPass,onExit}){
+  const[t,setT]=useState(""),[res,setRes]=useState(null),[peek,setPeek]=useState(false);
+  const words=t.trim().split(/\s+/).filter(Boolean).length;
+  const check=()=>{
+    const low=" "+t.toLowerCase().replace(/[^\w\s]/g," ").replace(/\s+/g," ")+" ";
+    const rows=ph.map(p=>{
+      const clean=p.en.toLowerCase().replace(/[^\w\s]/g," ").replace(/\s+/g," ").trim();
+      const w=clean.split(" ").filter(x=>x.length>1);
+      const exact=low.includes(" "+clean+" ");
+      const partial=w.length>=2&&w.filter(x=>low.includes(" "+x+" ")).length>=Math.ceil(w.length*.75);
+      return{...p,found:exact||partial};
+    });
+    const f=rows.filter(r=>r.found).length;
+    const pct=Math.round(f/ph.length*100);
+    setRes({rows,f,total:ph.length,pct,pass:pct>=60&&words>=20});
+  };
+  return(<div style={{paddingBottom:30}}>
+    <Top t="Unlock Gate" sub={`Use your ${ph.length} phrases`} onBack={onExit}/>
+    <div style={{padding:"0 20px"}}>
+      <div style={{background:"linear-gradient(150deg,rgba(255,176,32,.1),rgba(255,176,32,.03))",border:"1px solid rgba(255,176,32,.28)",borderRadius:16,padding:16,marginBottom:14}}>
+        <div style={{fontSize:13.5,color:"var(--warn)",fontWeight:600,marginBottom:6}}>Write from memory</div>
+        <div style={{fontSize:12.5,color:"var(--txt2)",lineHeight:1.7}}>Write a paragraph (20+ words) using as many of your learned phrases as you can. Hit <b style={{color:"var(--warn)"}}>60%</b> to unlock {BATCH} new phrases.</div>
+      </div>
+
+      <button onClick={()=>setPeek(!peek)} style={{width:"100%",padding:"11px",background:"var(--surface)",border:"1px solid var(--line)",borderRadius:12,fontSize:12,color:"var(--txt3)",marginBottom:12}}>
+        {peek?"◇ Hide":"◈ Peek at"} the {ph.length} phrases {peek?"":"(try without it first)"}
+      </button>
+      {peek&&<div style={{maxHeight:170,overflowY:"auto",background:"var(--surface)",border:"1px solid var(--line)",borderRadius:13,padding:12,marginBottom:12}}>
+        {ph.map((p,x)=><div key={x} style={{display:"flex",justifyContent:"space-between",gap:10,padding:"5px 0",borderBottom:x<ph.length-1?"1px solid var(--line)":"none",fontSize:11.5}}>
+          <span dir="ltr" style={{color:"var(--txt2)"}}>{p.en}</span><span className="ar" style={{color:"var(--txt3)",flexShrink:0}}>{p.ar}</span></div>)}
+      </div>}
+
+      <textarea value={t} onChange={e=>{setT(e.target.value);setRes(null)}} placeholder="Start writing your paragraph in English…" dir="ltr"
+        style={{width:"100%",minHeight:170,padding:16,fontSize:15,background:"var(--surface)",border:"1px solid var(--line)",borderRadius:15,color:"var(--txt)",resize:"vertical",lineHeight:1.75}}/>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:11.5,color:words>=20?"var(--acc)":"var(--txt3)",marginTop:7,marginBottom:14}}>
+        <span>{words} words</span><span>{words>=20?"✓ length ok":`${20-words} more needed`}</span>
+      </div>
+
+      {!res&&<button onClick={check} disabled={words<5} style={{width:"100%",padding:15,borderRadius:14,background:words>=5?"var(--warn)":"var(--surface2)",color:words>=5?"#2A1A00":"var(--txt3)",fontSize:15,fontWeight:600}}>Evaluate</button>}
+
+      {res&&<div className="fu">
+        <div style={{textAlign:"center",padding:"18px 0 16px"}}>
+          <div style={{fontSize:44,fontWeight:700,letterSpacing:"-.03em",color:res.pass?"var(--acc)":"var(--err)"}}>{res.pct}%</div>
+          <div style={{fontSize:12.5,color:"var(--txt3)",marginTop:2}}>{res.f} of {res.total} phrases used</div>
+          <div style={{fontSize:13.5,color:res.pass?"var(--acc)":"var(--warn)",marginTop:9,fontWeight:500}}>
+            {res.pass?"Gate cleared — new phrases ready":words<20?"Need 20+ words":"Below 60% — keep drilling"}
+          </div>
+        </div>
+        <div style={{maxHeight:210,overflowY:"auto",background:"var(--surface)",border:"1px solid var(--line)",borderRadius:14,padding:12,marginBottom:14}}>
+          {res.rows.map((p,x)=><div key={x} style={{display:"flex",alignItems:"center",gap:9,padding:"6px 0",borderBottom:x<res.rows.length-1?"1px solid var(--line)":"none",fontSize:12}}>
+            <span style={{width:16,height:16,borderRadius:5,background:p.found?"var(--acc)":"var(--surface2)",color:p.found?"#00150E":"var(--txt3)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,flexShrink:0}}>{p.found?"✓":"·"}</span>
+            <span dir="ltr" style={{flex:1,color:p.found?"var(--txt)":"var(--txt3)"}}>{p.en}</span>
+            <span className="ar" style={{color:"var(--txt3)",fontSize:11,flexShrink:0}}>{p.ar}</span></div>)}
+        </div>
+        {res.pass
+          ?<button onClick={onPass} style={{width:"100%",padding:16,borderRadius:14,background:"var(--acc)",color:"#00150E",fontSize:15.5,fontWeight:700}}>Unlock {BATCH} new phrases →</button>
+          :<button onClick={()=>{setRes(null)}} style={{width:"100%",padding:15,borderRadius:14,background:"var(--surface2)",fontSize:15,fontWeight:600}}>Revise & retry</button>}
+      </div>}
+    </div>
+  </div>);
+}
+
+/* ══════════ IMPORT ══════════ */
+function Import({ph,onAdd,onExit}){
+  const[tab,setTab]=useState("file"),[txt,setTxt]=useState(""),[pv,setPv]=useState(null);
+  const[drag,setDrag]=useState(false),[msg,setMsg]=useState("");const fr=useRef(null);
+  const run=rows=>{
+    const have=new Set(ph.map(p=>nm(p.en)));
+    const good=[],bad=[];
+    for(const r of rows){const v=parseRow(r);if(v)good.push(v);else if((r||[]).some(c=>cleanStr(c)))bad.push(r)}
+    const seen=new Set(),uniq=[];
+    for(const g of good){const key=nm(g.en);if(seen.has(key))continue;seen.add(key);uniq.push(g)}
+    const fresh=uniq.filter(p=>!have.has(nm(p.en)));
+    setPv({parsed:uniq.length,skipped:bad.length,fresh:fresh.length,items:fresh});
+    setMsg("");
+  };
+  const file=f=>{if(!f)return;setMsg("Reading file…");const rd=new FileReader();
+    rd.onload=e=>{try{const wb=XLSX.read(new Uint8Array(e.target.result),{type:"array"});
+      const ws=wb.Sheets[wb.SheetNames[0]];run(XLSX.utils.sheet_to_json(ws,{header:1,defval:""}))}
+      catch(err){setMsg("Could not read: "+err.message)}};
+    rd.readAsArrayBuffer(f)};
+  return(<div style={{paddingBottom:30}}>
+    <Top t="Import Phrases" sub={`${ph.length} in library`} onBack={onExit}/>
+    <div style={{padding:"0 20px"}}>
+      <div style={{display:"flex",gap:7,marginBottom:16,background:"var(--surface)",padding:4,borderRadius:13,border:"1px solid var(--line)"}}>
+        {[["file","Excel file"],["paste","Paste rows"]].map(([id,l])=>
+          <button key={id} onClick={()=>{setTab(id);setPv(null);setMsg("")}} style={{flex:1,padding:"9px",borderRadius:10,fontSize:13,fontWeight:600,background:tab===id?"var(--surface2)":"transparent",color:tab===id?"var(--txt)":"var(--txt3)",transition:"all .2s"}}>{l}</button>)}
+      </div>
+
+      {tab==="file"&&<div onDrop={e=>{e.preventDefault();setDrag(false);file(e.dataTransfer.files[0])}}
+        onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)}
+        onClick={()=>fr.current?.click()}
+        style={{border:`2px dashed ${drag?"var(--acc)":"var(--line)"}`,background:drag?"rgba(0,229,160,.05)":"var(--surface)",borderRadius:17,padding:"38px 20px",textAlign:"center",transition:"all .2s"}}>
+        <div style={{fontSize:38,color:"var(--txt3)",marginBottom:9}}>⬒</div>
+        <div style={{fontSize:14.5,fontWeight:600,marginBottom:4}}>Drop your .xlsx here</div>
+        <div style={{fontSize:12,color:"var(--txt3)",lineHeight:1.6}}>or tap to browse<br/>Columns are detected automatically</div>
+        <input ref={fr} type="file" accept=".xlsx,.xls,.csv" onChange={e=>file(e.target.files[0])} style={{display:"none"}}/>
+      </div>}
+
+      {tab==="paste"&&<>
+        <textarea value={txt} onChange={e=>{setTxt(e.target.value);setPv(null)}} placeholder={"Paste rows from Excel (Ctrl+A → Ctrl+C → paste here)"} dir="ltr"
+          style={{width:"100%",minHeight:140,padding:14,fontSize:12.5,background:"var(--surface)",border:"1px solid var(--line)",borderRadius:14,color:"var(--txt)",resize:"vertical",fontFamily:"ui-monospace,monospace"}}/>
+        {txt.trim()&&!pv&&<button onClick={()=>run(txt.split("\n").filter(l=>l.trim()).map(l=>l.split("\t")))}
+          style={{width:"100%",marginTop:12,padding:15,borderRadius:14,background:"var(--acc)",color:"#00150E",fontSize:15,fontWeight:600}}>Parse rows</button>}
+      </>}
+
+      {msg&&<div style={{marginTop:12,padding:12,background:"var(--surface)",border:"1px solid var(--line)",borderRadius:12,fontSize:12.5,color:"var(--txt2)",textAlign:"center"}}>{msg}</div>}
+
+      {pv&&<div className="fu" style={{marginTop:16}}>
+        <div style={{display:"flex",gap:8,marginBottom:14}}>
+          {[["Valid",pv.parsed,"var(--acc)"],["New",pv.fresh,"var(--p2)"],["Skipped",pv.skipped,"var(--txt3)"]].map(([l,v,c])=>
+            <div key={l} style={{flex:1,background:"var(--surface)",border:"1px solid var(--line)",borderRadius:13,padding:"12px 6px",textAlign:"center"}}>
+              <div style={{fontSize:20,fontWeight:700,color:c}}>{v}</div>
+              <div style={{fontSize:9.5,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:".08em"}}>{l}</div>
+            </div>)}
+        </div>
+        {pv.skipped>0&&<div style={{fontSize:11.5,color:"var(--txt3)",marginBottom:12,padding:"9px 12px",background:"var(--surface)",borderRadius:11,lineHeight:1.6}}>
+          {pv.skipped} row{pv.skipped>1?"s":""} skipped — headers, numbers, or rows missing an English or Arabic side.
+        </div>}
+        {pv.items.length>0?<>
+          <div style={{maxHeight:190,overflowY:"auto",background:"var(--surface)",border:"1px solid var(--line)",borderRadius:14,padding:12,marginBottom:14}}>
+            {pv.items.slice(0,25).map((p,x)=><div key={x} style={{display:"flex",justifyContent:"space-between",gap:10,padding:"6px 0",borderBottom:"1px solid var(--line)",fontSize:12}}>
+              <span dir="ltr" style={{color:"var(--txt)"}}>{p.en}</span><span className="ar" style={{color:"var(--txt3)",flexShrink:0}}>{p.ar}</span></div>)}
+            {pv.items.length>25&&<div style={{fontSize:11.5,color:"var(--txt3)",textAlign:"center",paddingTop:9}}>+{pv.items.length-25} more</div>}
+          </div>
+          <button onClick={()=>{onAdd(pv.items);setPv(null);setTxt("")}} style={{width:"100%",padding:16,borderRadius:14,background:"var(--acc)",color:"#00150E",fontSize:15.5,fontWeight:700}}>Add {pv.fresh} phrases to library</button>
+        </>:<div style={{textAlign:"center",padding:"16px",color:"var(--txt3)",fontSize:13.5}}>Nothing new — all already in your library</div>}
+      </div>}
+    </div>
+  </div>);
+}
+
+/* ══════════ LIBRARY ══════════ */
+function Library({ph,unlocked,onExit,onWipe,onExport,onImportBackup}){
+  const[q,setQ]=useState("");
+  const list=useMemo(()=>{
+    const f=q.trim().toLowerCase();
+    return ph.map((p,i)=>({...p,i})).filter(p=>!f||p.en.toLowerCase().includes(f)||p.ar.includes(f));
+  },[ph,q]);
+  return(<div style={{paddingBottom:30}}>
+    <Top t="Library" sub={`${ph.length} phrases · ${unlocked} unlocked`} onBack={onExit}/>
+    <div style={{padding:"0 20px"}}>
+      <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search English or Arabic…" dir="auto"
+        style={{width:"100%",padding:"13px 16px",fontSize:14,background:"var(--surface)",border:"1px solid var(--line)",borderRadius:13,color:"var(--txt)",marginBottom:14}}/>
+      <div style={{background:"var(--surface)",border:"1px solid var(--line)",borderRadius:15,overflow:"hidden"}}>
+        {list.slice(0,300).map((p,x)=>{
+          const locked=p.i>=unlocked;const st=p.st||0;
+          return<div key={x} style={{padding:"11px 14px",borderBottom:x<Math.min(list.length,300)-1?"1px solid var(--line)":"none",opacity:locked?.4:1}}>
+            <div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"center",marginBottom:3}}>
+              <span dir="ltr" style={{fontSize:13.5,fontWeight:500,flex:1}}>{p.en}</span>
+              <span style={{fontSize:10,color:"var(--txt3)",flexShrink:0,letterSpacing:"-.5px"}}>{locked?"🔒":"●".repeat(st)+"○".repeat(5-st)}</span>
+            </div>
+            <div className="ar" style={{fontSize:12.5,color:"var(--txt3)"}}>{p.ar}</div>
+          </div>})}
+        {list.length>300&&<div style={{padding:12,textAlign:"center",fontSize:11.5,color:"var(--txt3)"}}>Showing first 300 of {list.length}</div>}
+        {!list.length&&<div style={{padding:24,textAlign:"center",fontSize:13,color:"var(--txt3)"}}>No matches</div>}
+      </div>
+      {/* BACKUP / SYNC */}
+      <div style={{marginTop:18,background:"var(--surface)",border:"1px solid var(--line)",borderRadius:15,padding:16}}>
+        <div style={{fontSize:12.5,fontWeight:600,marginBottom:4}}>Backup & move to another device</div>
+        <div style={{fontSize:11.5,color:"var(--txt3)",lineHeight:1.65,marginBottom:12}}>
+          Save a file here, send it to your other device (WhatsApp / OneDrive), then load it there. Your phrases, strength and batch all come with it.
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={onExport} style={{flex:1,padding:12,borderRadius:12,background:"var(--acc)",color:"#00150E",fontSize:13,fontWeight:600}}>↓ Save backup</button>
+          <button onClick={onImportBackup} style={{flex:1,padding:12,borderRadius:12,background:"var(--surface2)",border:"1px solid var(--line)",fontSize:13,fontWeight:600}}>↑ Load backup</button>
+        </div>
+      </div>
+
+      <button onClick={onWipe} style={{width:"100%",marginTop:14,padding:13,borderRadius:13,background:"transparent",border:"1px solid rgba(255,92,92,.3)",color:"var(--err)",fontSize:13,fontWeight:500}}>Reset all progress</button>
+    </div>
+  </div>);
+}
+
+/* ══════════ APP ══════════ */
+function App(){
+  const[lib,setLib]=useState([]),[batch,setBatch]=useState(1),[streak,setStreak]=useState(0);
+  const[best,setBest]=useState(0),[scr,setScr]=useState("hub"),[boot,setBoot]=useState(true);
+
+  useEffect(()=>{
+    const d=ld();
+    if(d&&Array.isArray(d.lib)&&d.lib.length){
+      const clean=sanitize(d.lib);           // strips any corrupted rows
+      const use=clean.length?clean:SEED.map((p,i)=>({...p,ord:i,st:0,ok:0,no:0}));
+      setLib(use);setBatch(d.batch||1);setStreak(d.streak||0);setBest(d.best||0);
+      if(clean.length!==d.lib.length)sv({lib:use,batch:d.batch||1,streak:d.streak||0,best:d.best||0});
+    }else{
+      const init=SEED.map((p,i)=>({...p,ord:i,st:0,ok:0,no:0}));
+      setLib(init);sv({lib:init,batch:1,streak:0,best:0});
+    }
+    setBoot(false);
+  },[]);
+
+  const persist=useCallback((l,b,s,bs)=>{
+    setLib(l);if(b!==undefined)setBatch(b);if(s!==undefined)setStreak(s);if(bs!==undefined)setBest(bs);
+    sv({lib:l,batch:b??batch,streak:s??streak,best:bs??best});
+  },[batch,streak,best]);
+
+  const up=useCallback((en,ok)=>{
+    setLib(prev=>{
+      const next=prev.map(p=>nm(p.en)!==nm(en)?p:{
+        ...p,st:Math.min(5,Math.max(0,(p.st||0)+(ok?1:-1))),ok:(p.ok||0)+(ok?1:0),no:(p.no||0)+(ok?0:1)});
+      const s=ok?streak+1:0;const bs=Math.max(best,s);
+      setStreak(s);setBest(bs);sv({lib:next,batch,streak:s,best:bs});
+      return next;
+    });
+  },[streak,best,batch]);
+
+  const add=useCallback(items=>{
+    const start=lib.length;
+    persist([...lib,...items.map((p,i)=>({...p,ord:start+i,st:0,ok:0,no:0}))],batch,streak,best);
+    setScr("hub");
+  },[lib,batch,streak,best,persist]);
+
+  const unlocked=Math.min(lib.length,BATCH*batch);
+  const active=useMemo(()=>lib.slice(0,unlocked),[lib,unlocked]);
+  const next3=useMemo(()=>lib.slice(unlocked,unlocked+3),[lib,unlocked]);
+  const more=unlocked<lib.length;
+
+  const st=useMemo(()=>{
+    const t=active.length;
+    const m=active.filter(p=>(p.st||0)>=4).length;
+    const l=active.filter(p=>(p.st||0)>0&&(p.st||0)<4).length;
+    const avg=t?active.reduce((s,p)=>s+(p.st||0),0)/t:0;
+    return{t,m,l,f:t-m-l,pct:Math.round(avg/5*100)};
+  },[active]);
+
+  if(boot)return<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh"}}>
+    <div style={{display:"flex",gap:6}}>{[0,1,2].map(i=><div key={i} style={{width:9,height:9,borderRadius:"50%",background:"var(--acc)",animation:`dots 1.2s ${i*.15}s infinite`}}/>)}</div></div>;
+
+  const box={background:"var(--bg)",minHeight:"100vh"};
+  if(scr==="import")return<div style={box}><Import ph={lib} onAdd={add} onExit={()=>setScr("hub")}/></div>;
+  if(scr==="gate")return<div style={box}><Gate ph={active} onPass={()=>{persist(lib,batch+1,streak,best);setScr("hub")}} onExit={()=>setScr("hub")}/></div>;
+  if(scr==="lib")return<div style={box}><Library ph={lib} unlocked={unlocked} onExit={()=>setScr("hub")}
+    onWipe={()=>{if(confirm("Wipe all progress and re-lock everything?")){persist(lib.map(p=>({...p,st:0,ok:0,no:0})),1,0,0);setScr("hub")}}}
+    onExport={()=>{
+      const blob=new Blob([JSON.stringify({v:1,saved:new Date().toISOString(),lib,batch,streak,best},null,1)],{type:"application/json"});
+      const a=document.createElement("a");
+      a.href=URL.createObjectURL(blob);
+      a.download=`lingoforge-backup-${new Date().toISOString().slice(0,10)}.json`;
+      a.click();setTimeout(()=>URL.revokeObjectURL(a.href),3000);
+    }}
+    onImportBackup={()=>{
+      const inp=document.createElement("input");inp.type="file";inp.accept=".json,application/json";
+      inp.onchange=e=>{const f=e.target.files[0];if(!f)return;
+        const rd=new FileReader();
+        rd.onload=ev=>{
+          try{
+            const d=JSON.parse(ev.target.result);
+            const clean=sanitize(d.lib);
+            if(!clean.length){alert("This file has no usable phrases.");return}
+            if(!confirm(`Load backup?\n\n${clean.length} phrases · batch ${d.batch||1}\n\nThis replaces what is on this device.`))return;
+            persist(clean,d.batch||1,d.streak||0,d.best||0);
+            setScr("hub");
+          }catch(err){alert("Could not read this backup file.")}
+        };
+        rd.readAsText(f);
+      };
+      inp.click();
+    }}/></div>;
+
+  const P={ph:active,all:lib,up,onExit:()=>setScr("hub")};
+  const M={flash:Flash,mcq:MCQ,type:Type,match:Match,build:Build,listen:Listen,speed:Speed};
+  if(M[scr]){const C=M[scr];return<div style={box}><C {...P}/></div>}
+
+  const tier=st.pct>=85?"Master":st.pct>=65?"Advanced":st.pct>=45?"Intermediate":st.pct>=20?"Beginner+":"Beginner";
+
+  return(<div style={box}>
+    {/* HERO */}
+    <div style={{padding:"26px 20px 20px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:22}}>
+        <div>
+          <div style={{fontSize:9.5,color:"var(--acc)",textTransform:"uppercase",letterSpacing:".18em",fontWeight:600,marginBottom:5}}>LingoForge</div>
+          <div style={{fontSize:27,fontWeight:700,letterSpacing:"-.035em",lineHeight:1.1}}>Batch {batch}</div>
+          <div style={{fontSize:12.5,color:"var(--txt3)",marginTop:3}}>{tier} · {st.pct}% mastery</div>
+        </div>
+        <div style={{display:"flex",gap:7}}>
+          <div style={{padding:"9px 13px",borderRadius:13,background:"var(--surface)",border:"1px solid var(--line)",textAlign:"center"}}>
+            <div style={{fontSize:16,fontWeight:700,color:streak>0?"var(--acc)":"var(--txt3)"}}>{streak}</div>
+            <div style={{fontSize:8.5,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:".07em"}}>streak</div>
+          </div>
+          <button onClick={()=>setScr("lib")} style={{width:41,padding:"9px 0",borderRadius:13,background:"var(--surface)",border:"1px solid var(--line)",fontSize:16,color:"var(--txt2)"}}>☰</button>
+        </div>
+      </div>
+
+      {/* PROGRESS PANEL */}
+      <div style={{background:"var(--surface)",border:"1px solid var(--line)",borderRadius:19,padding:"17px 18px",marginBottom:12}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:9}}>
+          <span style={{fontSize:11,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:".1em"}}>Unlocked</span>
+          <span style={{fontSize:14,fontWeight:700}}><span style={{color:"var(--acc)"}}>{unlocked}</span><span style={{color:"var(--txt3)"}}> / {lib.length}</span></span>
+        </div>
+        <Bar v={unlocked/Math.max(lib.length,1)*100} h={5}/>
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:14,paddingTop:14,borderTop:"1px solid var(--line)"}}>
+          {[["Active",st.t,"var(--txt)"],["Mastered",st.m,"var(--acc)"],["Learning",st.l,"var(--p2)"],["Fresh",st.f,"var(--txt3)"],["Best 🔥",best,"var(--warn)"]].map(([l,v,c])=>
+            <div key={l} style={{textAlign:"center"}}>
+              <div style={{fontSize:16,fontWeight:700,color:c}}>{v}</div>
+              <div style={{fontSize:8.5,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:".06em",marginTop:1}}>{l}</div>
+            </div>)}
+        </div>
+      </div>
+
+      {/* GATE CTA */}
+      {more&&<button onClick={()=>setScr("gate")} style={{width:"100%",padding:"15px 18px",borderRadius:17,background:"linear-gradient(120deg,rgba(255,176,32,.14),rgba(255,138,92,.07))",border:"1px solid rgba(255,176,32,.35)",textAlign:"left",display:"flex",alignItems:"center",gap:13,marginBottom:12}}>
+        <span style={{width:38,height:38,borderRadius:12,background:"rgba(255,176,32,.18)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,color:"var(--warn)",flexShrink:0}}>✎</span>
+        <span style={{flex:1}}>
+          <span style={{display:"block",fontSize:14,fontWeight:600,color:"var(--warn)"}}>Unlock {BATCH} new phrases</span>
+          <span style={{display:"block",fontSize:11.5,color:"var(--txt3)",marginTop:2}}>Write a paragraph using your {unlocked} phrases</span>
+        </span>
+        <span style={{color:"var(--warn)",fontSize:17}}>→</span>
+      </button>}
+      {!more&&lib.length>BATCH&&<div style={{padding:"13px 16px",borderRadius:15,background:"rgba(0,229,160,.08)",border:"1px solid rgba(0,229,160,.25)",fontSize:13,color:"var(--acc)",textAlign:"center",marginBottom:12,fontWeight:500}}>◆ Every phrase unlocked — full library live</div>}
+
+      {/* NEXT PEEK */}
+      {next3.length>0&&<div style={{background:"var(--surface)",border:"1px dashed var(--line)",borderRadius:15,padding:"12px 15px",marginBottom:12}}>
+        <div style={{fontSize:9.5,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:".1em",marginBottom:7}}>🔒 Behind the gate</div>
+        {next3.map((p,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:11.5,color:"var(--txt3)",padding:"2px 0"}}>
+          <span dir="ltr">{p.en}</span><span className="ar" style={{flexShrink:0,opacity:.6}}>{p.ar}</span></div>)}
+      </div>}
+    </div>
+
+    {/* DRILLS */}
+    <div style={{padding:"0 20px"}}>
+      <div style={{fontSize:10.5,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:".14em",fontWeight:600,marginBottom:11}}>Drills</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9}}>
+        {MODES.map((m,i)=>{
+          const wide=i===MODES.length-1&&MODES.length%2===1;
+          return<button key={m.id} onClick={()=>{if(active.length<2){alert("Import your phrases first");return}setScr(m.id)}}
+            style={{gridColumn:wide?"span 2":"auto",background:"var(--surface)",border:"1px solid var(--line)",borderRadius:17,padding:"15px 14px",textAlign:"left",display:"flex",alignItems:"center",gap:12,transition:"all .2s"}}>
+            <span style={{width:38,height:38,borderRadius:12,background:"var(--surface2)",color:m.c,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0}}>{m.ic}</span>
+            <span style={{flex:1,minWidth:0}}>
+              <span style={{display:"block",fontSize:13.5,fontWeight:600,letterSpacing:"-.01em"}}>{m.t}</span>
+              <span style={{display:"block",fontSize:10.5,color:"var(--txt3)",marginTop:1}}>{m.d}</span>
+            </span>
+          </button>})}
+      </div>
+    </div>
+
+    {/* IMPORT */}
+    <div style={{padding:"16px 20px 34px"}}>
+      <button onClick={()=>setScr("import")} style={{width:"100%",padding:14,borderRadius:15,background:"var(--surface)",border:"1px solid var(--line)",fontSize:13.5,fontWeight:500,color:"var(--txt2)",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+        ⬒ Import from Excel <span style={{color:"var(--txt3)",fontSize:12}}>· {lib.length} in library</span>
+      </button>
+    </div>
+  </div>);
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", function () {
+    navigator.serviceWorker.register("sw.js").catch(function () {});
+  });
+}
+</script>
+</body>
+</html>
