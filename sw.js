@@ -1,5 +1,5 @@
 /* LingoForge service worker — offline support */
-const CACHE = "lingoforge-v1";
+const CACHE = "lingoforge-v2";
 
 const CORE = [
   "./",
@@ -11,7 +11,8 @@ const CORE = [
   "https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js",
   "https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js",
   "https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js",
-  "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"
+  "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js",
+  "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.7/dist/umd/supabase.min.js"
 ];
 
 self.addEventListener("install", (e) => {

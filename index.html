@@ -41,6 +41,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.7/dist/umd/supabase.min.js"></script>
 </head>
 <body>
 <div id="root"></div>
@@ -131,6 +132,65 @@ const pick=(ps,n)=>{
 const say=(t,rate=.85)=>{if(!("speechSynthesis"in window))return;speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang="en-US";u.rate=rate;speechSynthesis.speak(u)};
 const ld=()=>{try{const d=localStorage.getItem(KEY);return d?JSON.parse(d):null}catch{return null}};
 const sv=d=>{try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}};
+
+/* ══════════ CLOUD SYNC (Supabase) ══════════ */
+const SB_URL="https://dhlicufomqhhzpddlduo.supabase.co";
+const SB_KEY="sb_publishable_-0y-zxhHj_oEdSyGbOK1sw_XDA9HWUU";
+let sb=null;
+try{ if(window.supabase) sb=window.supabase.createClient(SB_URL,SB_KEY); }catch(e){}
+
+const cloudGet=async(uid)=>{
+  if(!sb)return null;
+  const{data,error}=await sb.from("progress").select("data,updated_at").eq("user_id",uid).maybeSingle();
+  if(error||!data)return null;
+  return data;
+};
+const cloudPut=async(uid,payload)=>{
+  if(!sb)return false;
+  const{error}=await sb.from("progress").upsert({user_id:uid,data:payload,updated_at:new Date().toISOString()});
+  return !error;
+};
+
+/* ══════════ SIGN IN SCREEN ══════════ */
+function Auth({onDone,onSkip}){
+  const[mode,setMode]=useState("in");
+  const[em,setEm]=useState(""),[pw,setPw]=useState("");
+  const[busy,setBusy]=useState(false),[err,setErr]=useState("");
+  const go=async()=>{
+    setErr("");
+    if(!em.trim()||pw.length<6){setErr("Enter your email and a password of 6+ characters.");return}
+    if(!sb){setErr("Cannot reach the server. Check your internet.");return}
+    setBusy(true);
+    try{
+      const fn=mode==="in"?sb.auth.signInWithPassword({email:em.trim(),password:pw})
+                          :sb.auth.signUp({email:em.trim(),password:pw});
+      const{data,error}=await fn;
+      if(error){setErr(error.message);setBusy(false);return}
+      if(!data.session&&!data.user){setErr("Something went wrong. Try again.");setBusy(false);return}
+      onDone();
+    }catch(e){setErr("Connection failed.")}
+    setBusy(false);
+  };
+  return(<div style={{minHeight:"100vh",display:"flex",flexDirection:"column",justifyContent:"center",padding:"32px 24px"}}>
+    <div style={{textAlign:"center",marginBottom:28}}>
+      <div style={{fontSize:9.5,color:"var(--acc)",textTransform:"uppercase",letterSpacing:".18em",fontWeight:600,marginBottom:8}}>LingoForge</div>
+      <div style={{fontSize:24,fontWeight:700,letterSpacing:"-.03em",marginBottom:7}}>{mode==="in"?"Welcome back":"Create your account"}</div>
+      <div style={{fontSize:13,color:"var(--txt3)",lineHeight:1.65}}>Sign in on every device and your progress follows you automatically.</div>
+    </div>
+    <input value={em} onChange={e=>setEm(e.target.value)} placeholder="Email" type="email" dir="ltr" autoComplete="email"
+      style={{width:"100%",padding:"15px 17px",fontSize:15,background:"var(--surface)",border:"1px solid var(--line)",borderRadius:14,color:"var(--txt)",marginBottom:10}}/>
+    <input value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()} placeholder="Password" type="password" dir="ltr"
+      autoComplete={mode==="in"?"current-password":"new-password"}
+      style={{width:"100%",padding:"15px 17px",fontSize:15,background:"var(--surface)",border:"1px solid var(--line)",borderRadius:14,color:"var(--txt)",marginBottom:14}}/>
+    {err&&<div style={{padding:"11px 14px",background:"rgba(255,92,92,.1)",border:"1px solid rgba(255,92,92,.3)",borderRadius:12,fontSize:12.5,color:"var(--err)",marginBottom:12,lineHeight:1.55}}>{err}</div>}
+    <button onClick={go} disabled={busy} style={{width:"100%",padding:16,borderRadius:14,background:busy?"var(--surface2)":"var(--acc)",color:busy?"var(--txt3)":"#00150E",fontSize:15.5,fontWeight:700,marginBottom:12}}>
+      {busy?"Working…":mode==="in"?"Sign in":"Create account"}</button>
+    <button onClick={()=>{setMode(mode==="in"?"up":"in");setErr("")}} style={{width:"100%",padding:12,fontSize:13,color:"var(--txt2)",marginBottom:18}}>
+      {mode==="in"?"No account yet? Create one":"Already have an account? Sign in"}</button>
+    <button onClick={onSkip} style={{width:"100%",padding:13,borderRadius:13,background:"transparent",border:"1px solid var(--line)",fontSize:12.5,color:"var(--txt3)"}}>
+      Continue without syncing</button>
+  </div>);
+}
 
 /* Sanitize anything already in storage — removes the corrupted "6/8/9" rows */
 const sanitize=arr=>(arr||[]).map(p=>{
@@ -555,7 +615,7 @@ function Import({ph,onAdd,onExit}){
 }
 
 /* ══════════ LIBRARY ══════════ */
-function Library({ph,unlocked,onExit,onWipe,onExport,onImportBackup}){
+function Library({ph,unlocked,onExit,onWipe,onExport,onImportBackup,user,onSignIn,onSignOut}){
   const[q,setQ]=useState("");
   const list=useMemo(()=>{
     const f=q.trim().toLowerCase();
@@ -579,6 +639,24 @@ function Library({ph,unlocked,onExit,onWipe,onExport,onImportBackup}){
         {list.length>300&&<div style={{padding:12,textAlign:"center",fontSize:11.5,color:"var(--txt3)"}}>Showing first 300 of {list.length}</div>}
         {!list.length&&<div style={{padding:24,textAlign:"center",fontSize:13,color:"var(--txt3)"}}>No matches</div>}
       </div>
+      {/* ACCOUNT */}
+      <div style={{marginTop:18,background:"var(--surface)",border:"1px solid var(--line)",borderRadius:15,padding:16}}>
+        <div style={{fontSize:12.5,fontWeight:600,marginBottom:4}}>Account</div>
+        {user
+          ?<>
+            <div style={{fontSize:11.5,color:"var(--txt3)",lineHeight:1.65,marginBottom:12}}>
+              Signed in as <span style={{color:"var(--acc)"}}>{user.email}</span>. Your progress saves to the cloud automatically and loads on any device you sign in on.
+            </div>
+            <button onClick={onSignOut} style={{width:"100%",padding:12,borderRadius:12,background:"var(--surface2)",border:"1px solid var(--line)",fontSize:13,fontWeight:600}}>Sign out</button>
+          </>
+          :<>
+            <div style={{fontSize:11.5,color:"var(--txt3)",lineHeight:1.65,marginBottom:12}}>
+              Not signed in — progress stays on this device only. Sign in to sync it across your phone and computer.
+            </div>
+            <button onClick={onSignIn} style={{width:"100%",padding:12,borderRadius:12,background:"var(--acc)",color:"#00150E",fontSize:13,fontWeight:600}}>Sign in to sync</button>
+          </>}
+      </div>
+
       {/* BACKUP / SYNC */}
       <div style={{marginTop:18,background:"var(--surface)",border:"1px solid var(--line)",borderRadius:15,padding:16}}>
         <div style={{fontSize:12.5,fontWeight:600,marginBottom:4}}>Backup & move to another device</div>
@@ -600,35 +678,98 @@ function Library({ph,unlocked,onExit,onWipe,onExport,onImportBackup}){
 function App(){
   const[lib,setLib]=useState([]),[batch,setBatch]=useState(1),[streak,setStreak]=useState(0);
   const[best,setBest]=useState(0),[scr,setScr]=useState("hub"),[boot,setBoot]=useState(true);
+  const[user,setUser]=useState(null),[needAuth,setNeedAuth]=useState(false),[syncing,setSyncing]=useState(false);
+  const pushTimer=useRef(null);
 
-  useEffect(()=>{
+  /* debounced upload — never blocks the UI */
+  const cloudPush=useCallback((payload)=>{
+    if(!user)return;
+    clearTimeout(pushTimer.current);
+    pushTimer.current=setTimeout(async()=>{
+      setSyncing(true);
+      await cloudPut(user.id,payload);
+      setSyncing(false);
+    },1200);
+  },[user]);
+
+  const bootLocal=()=>{
     const d=ld();
     if(d&&Array.isArray(d.lib)&&d.lib.length){
-      const clean=sanitize(d.lib);           // strips any corrupted rows
+      const clean=sanitize(d.lib);
       const use=clean.length?clean:SEED.map((p,i)=>({...p,ord:i,st:0,ok:0,no:0}));
       setLib(use);setBatch(d.batch||1);setStreak(d.streak||0);setBest(d.best||0);
-      if(clean.length!==d.lib.length)sv({lib:use,batch:d.batch||1,streak:d.streak||0,best:d.best||0});
+      return{lib:use,batch:d.batch||1,streak:d.streak||0,best:d.best||0};
+    }
+    const init=SEED.map((p,i)=>({...p,ord:i,st:0,ok:0,no:0}));
+    setLib(init);sv({lib:init,batch:1,streak:0,best:0});
+    return{lib:init,batch:1,streak:0,best:0};
+  };
+
+  /* startup: check session, then merge cloud with local */
+  useEffect(()=>{(async()=>{
+    const local=bootLocal();
+    if(!sb){setBoot(false);return}
+    const{data}=await sb.auth.getSession();
+    const u=data?.session?.user||null;
+    if(!u){setNeedAuth(true);setBoot(false);return}
+    setUser(u);
+    const row=await cloudGet(u.id);
+    if(row&&row.data&&Array.isArray(row.data.lib)&&row.data.lib.length){
+      const c=row.data;const clean=sanitize(c.lib);
+      /* cloud wins when it is further along, otherwise keep local and upload it */
+      const cloudAhead=(clean.length>local.lib.length)||((c.batch||1)>local.batch);
+      if(cloudAhead&&clean.length){
+        setLib(clean);setBatch(c.batch||1);setStreak(c.streak||0);setBest(c.best||0);
+        sv({lib:clean,batch:c.batch||1,streak:c.streak||0,best:c.best||0});
+      }else{
+        await cloudPut(u.id,local);
+      }
     }else{
-      const init=SEED.map((p,i)=>({...p,ord:i,st:0,ok:0,no:0}));
-      setLib(init);sv({lib:init,batch:1,streak:0,best:0});
+      await cloudPut(u.id,local);
     }
     setBoot(false);
-  },[]);
+  })()},[]);
 
   const persist=useCallback((l,b,s,bs)=>{
     setLib(l);if(b!==undefined)setBatch(b);if(s!==undefined)setStreak(s);if(bs!==undefined)setBest(bs);
-    sv({lib:l,batch:b??batch,streak:s??streak,best:bs??best});
-  },[batch,streak,best]);
+    const payload={lib:l,batch:b??batch,streak:s??streak,best:bs??best};
+    sv(payload);cloudPush(payload);
+  },[batch,streak,best,cloudPush]);
 
   const up=useCallback((en,ok)=>{
     setLib(prev=>{
       const next=prev.map(p=>nm(p.en)!==nm(en)?p:{
         ...p,st:Math.min(5,Math.max(0,(p.st||0)+(ok?1:-1))),ok:(p.ok||0)+(ok?1:0),no:(p.no||0)+(ok?0:1)});
       const s=ok?streak+1:0;const bs=Math.max(best,s);
-      setStreak(s);setBest(bs);sv({lib:next,batch,streak:s,best:bs});
+      setStreak(s);setBest(bs);
+      const payload={lib:next,batch,streak:s,best:bs};
+      sv(payload);cloudPush(payload);
       return next;
     });
-  },[streak,best,batch]);
+  },[streak,best,batch,cloudPush]);
+
+  const signOut=useCallback(async()=>{
+    if(sb)await sb.auth.signOut();
+    setUser(null);setNeedAuth(true);
+  },[]);
+
+  const afterAuth=useCallback(async()=>{
+    const{data}=await sb.auth.getSession();
+    const u=data?.session?.user;if(!u)return;
+    setUser(u);setNeedAuth(false);setBoot(true);
+    const row=await cloudGet(u.id);
+    const local=ld()||{lib,batch,streak,best};
+    if(row&&row.data&&Array.isArray(row.data.lib)&&row.data.lib.length){
+      const c=row.data;const clean=sanitize(c.lib);
+      if(clean.length){
+        setLib(clean);setBatch(c.batch||1);setStreak(c.streak||0);setBest(c.best||0);
+        sv({lib:clean,batch:c.batch||1,streak:c.streak||0,best:c.best||0});
+      }
+    }else{
+      await cloudPut(u.id,local);
+    }
+    setBoot(false);
+  },[lib,batch,streak,best]);
 
   const add=useCallback(items=>{
     const start=lib.length;
@@ -652,10 +793,14 @@ function App(){
   if(boot)return<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh"}}>
     <div style={{display:"flex",gap:6}}>{[0,1,2].map(i=><div key={i} style={{width:9,height:9,borderRadius:"50%",background:"var(--acc)",animation:`dots 1.2s ${i*.15}s infinite`}}/>)}</div></div>;
 
+  if(needAuth)return<div style={{background:"var(--bg)",minHeight:"100vh"}}>
+    <Auth onDone={afterAuth} onSkip={()=>setNeedAuth(false)}/></div>;
+
   const box={background:"var(--bg)",minHeight:"100vh"};
   if(scr==="import")return<div style={box}><Import ph={lib} onAdd={add} onExit={()=>setScr("hub")}/></div>;
   if(scr==="gate")return<div style={box}><Gate ph={active} onPass={()=>{persist(lib,batch+1,streak,best);setScr("hub")}} onExit={()=>setScr("hub")}/></div>;
   if(scr==="lib")return<div style={box}><Library ph={lib} unlocked={unlocked} onExit={()=>setScr("hub")}
+    user={user} onSignIn={()=>setNeedAuth(true)} onSignOut={signOut}
     onWipe={()=>{if(confirm("Wipe all progress and re-lock everything?")){persist(lib.map(p=>({...p,st:0,ok:0,no:0})),1,0,0);setScr("hub")}}}
     onExport={()=>{
       const blob=new Blob([JSON.stringify({v:1,saved:new Date().toISOString(),lib,batch,streak,best},null,1)],{type:"application/json"});
@@ -703,7 +848,9 @@ function App(){
             <div style={{fontSize:16,fontWeight:700,color:streak>0?"var(--acc)":"var(--txt3)"}}>{streak}</div>
             <div style={{fontSize:8.5,color:"var(--txt3)",textTransform:"uppercase",letterSpacing:".07em"}}>streak</div>
           </div>
-          <button onClick={()=>setScr("lib")} style={{width:41,padding:"9px 0",borderRadius:13,background:"var(--surface)",border:"1px solid var(--line)",fontSize:16,color:"var(--txt2)"}}>☰</button>
+          <button onClick={()=>setScr("lib")} style={{width:41,padding:"9px 0",borderRadius:13,background:"var(--surface)",border:"1px solid var(--line)",fontSize:16,color:"var(--txt2)",position:"relative"}}>☰
+            {user&&<span style={{position:"absolute",top:6,right:7,width:6,height:6,borderRadius:"50%",background:syncing?"var(--warn)":"var(--acc)"}}/>}
+          </button>
         </div>
       </div>
 
