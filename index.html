@@ -131,7 +131,7 @@ const pick=(ps,n)=>{
 };
 const say=(t,rate=.85)=>{if(!("speechSynthesis"in window))return;speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang="en-US";u.rate=rate;speechSynthesis.speak(u)};
 const ld=()=>{try{const d=localStorage.getItem(KEY);return d?JSON.parse(d):null}catch{return null}};
-const sv=d=>{try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}};
+const sv=d=>{try{localStorage.setItem(KEY,JSON.stringify({...d,ts:d.ts||Date.now()}))}catch(e){}};
 
 /* ══════════ CLOUD SYNC (Supabase) ══════════ */
 const SB_URL="https://dhlicufomqhhzpddlduo.supabase.co";
@@ -147,7 +147,8 @@ const cloudGet=async(uid)=>{
 };
 const cloudPut=async(uid,payload)=>{
   if(!sb)return false;
-  const{error}=await sb.from("progress").upsert({user_id:uid,data:payload,updated_at:new Date().toISOString()});
+  const stamped={...payload,ts:Date.now()};
+  const{error}=await sb.from("progress").upsert({user_id:uid,data:stamped,updated_at:new Date().toISOString()});
   return !error;
 };
 
@@ -615,7 +616,7 @@ function Import({ph,onAdd,onExit}){
 }
 
 /* ══════════ LIBRARY ══════════ */
-function Library({ph,unlocked,onExit,onWipe,onExport,onImportBackup,user,onSignIn,onSignOut}){
+function Library({ph,unlocked,onExit,onWipe,onExport,onImportBackup,user,onSignIn,onSignOut,onPull,onPush}){
   const[q,setQ]=useState("");
   const list=useMemo(()=>{
     const f=q.trim().toLowerCase();
@@ -646,6 +647,13 @@ function Library({ph,unlocked,onExit,onWipe,onExport,onImportBackup,user,onSignI
           ?<>
             <div style={{fontSize:11.5,color:"var(--txt3)",lineHeight:1.65,marginBottom:12}}>
               Signed in as <span style={{color:"var(--acc)"}}>{user.email}</span>. Your progress saves to the cloud automatically and loads on any device you sign in on.
+            </div>
+            <div style={{display:"flex",gap:8,marginBottom:8}}>
+              <button onClick={onPull} style={{flex:1,padding:12,borderRadius:12,background:"var(--acc)",color:"#00150E",fontSize:13,fontWeight:600}}>↓ Get from cloud</button>
+              <button onClick={onPush} style={{flex:1,padding:12,borderRadius:12,background:"var(--surface2)",border:"1px solid var(--acc)",color:"var(--acc)",fontSize:13,fontWeight:600}}>↑ Send to cloud</button>
+            </div>
+            <div style={{fontSize:11,color:"var(--txt3)",lineHeight:1.6,marginBottom:12}}>
+              Use these if a device looks out of date. "Send" makes this device the master copy.
             </div>
             <button onClick={onSignOut} style={{width:"100%",padding:12,borderRadius:12,background:"var(--surface2)",border:"1px solid var(--line)",fontSize:13,fontWeight:600}}>Sign out</button>
           </>
@@ -716,11 +724,12 @@ function App(){
     const row=await cloudGet(u.id);
     if(row&&row.data&&Array.isArray(row.data.lib)&&row.data.lib.length){
       const c=row.data;const clean=sanitize(c.lib);
-      /* cloud wins when it is further along, otherwise keep local and upload it */
-      const cloudAhead=(clean.length>local.lib.length)||((c.batch||1)>local.batch);
-      if(cloudAhead&&clean.length){
+      /* whichever side was saved most recently wins */
+      const cloudTs=c.ts||Date.parse(row.updated_at||0)||0;
+      const localTs=local.ts||0;
+      if(clean.length&&cloudTs>=localTs){
         setLib(clean);setBatch(c.batch||1);setStreak(c.streak||0);setBest(c.best||0);
-        sv({lib:clean,batch:c.batch||1,streak:c.streak||0,best:c.best||0});
+        sv({lib:clean,batch:c.batch||1,streak:c.streak||0,best:c.best||0,ts:cloudTs});
       }else{
         await cloudPut(u.id,local);
       }
@@ -761,9 +770,13 @@ function App(){
     const local=ld()||{lib,batch,streak,best};
     if(row&&row.data&&Array.isArray(row.data.lib)&&row.data.lib.length){
       const c=row.data;const clean=sanitize(c.lib);
-      if(clean.length){
+      const cloudTs=c.ts||Date.parse(row.updated_at||0)||0;
+      const localTs=local.ts||0;
+      if(clean.length&&cloudTs>=localTs){
         setLib(clean);setBatch(c.batch||1);setStreak(c.streak||0);setBest(c.best||0);
-        sv({lib:clean,batch:c.batch||1,streak:c.streak||0,best:c.best||0});
+        sv({lib:clean,batch:c.batch||1,streak:c.streak||0,best:c.best||0,ts:cloudTs});
+      }else{
+        await cloudPut(u.id,local);
       }
     }else{
       await cloudPut(u.id,local);
@@ -801,6 +814,23 @@ function App(){
   if(scr==="gate")return<div style={box}><Gate ph={active} onPass={()=>{persist(lib,batch+1,streak,best);setScr("hub")}} onExit={()=>setScr("hub")}/></div>;
   if(scr==="lib")return<div style={box}><Library ph={lib} unlocked={unlocked} onExit={()=>setScr("hub")}
     user={user} onSignIn={()=>setNeedAuth(true)} onSignOut={signOut}
+    onPull={async()=>{
+      if(!user)return;
+      const row=await cloudGet(user.id);
+      if(!row||!row.data||!Array.isArray(row.data.lib)||!row.data.lib.length){alert("Nothing saved in the cloud yet.");return}
+      const c=row.data;const clean=sanitize(c.lib);
+      if(!clean.length){alert("The cloud copy has no usable phrases.");return}
+      if(!confirm(`Load ${clean.length} phrases from the cloud?\n\nThis replaces what is on this device.`))return;
+      setLib(clean);setBatch(c.batch||1);setStreak(c.streak||0);setBest(c.best||0);
+      sv({lib:clean,batch:c.batch||1,streak:c.streak||0,best:c.best||0,ts:Date.now()});
+      alert("Loaded from cloud.");setScr("hub");
+    }}
+    onPush={async()=>{
+      if(!user)return;
+      if(!confirm(`Send this device's ${lib.length} phrases to the cloud?\n\nThis overwrites the cloud copy.`))return;
+      const ok=await cloudPut(user.id,{lib,batch,streak,best});
+      alert(ok?"Sent to cloud.":"Could not reach the server.");
+    }}
     onWipe={()=>{if(confirm("Wipe all progress and re-lock everything?")){persist(lib.map(p=>({...p,st:0,ok:0,no:0})),1,0,0);setScr("hub")}}}
     onExport={()=>{
       const blob=new Blob([JSON.stringify({v:1,saved:new Date().toISOString(),lib,batch,streak,best},null,1)],{type:"application/json"});

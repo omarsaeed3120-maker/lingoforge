@@ -1,5 +1,5 @@
 /* LingoForge service worker — offline support */
-const CACHE = "lingoforge-v2";
+const CACHE = "lingoforge-v3";
 
 const CORE = [
   "./",
